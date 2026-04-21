@@ -1,0 +1,44 @@
+# Copy-paste this entire block into a new file called .gitignore
+
+# CRITICAL: Secrets & Credentials
+.env
+.env.local
+secrets.toml
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+
+# Local databases
+*.db
+*.mdb
+*.sqlite
+*.sqlite3
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv

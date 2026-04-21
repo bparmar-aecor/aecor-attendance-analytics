@@ -1,0 +1,13 @@
+# Aecor Attendance Analytics - Dependencies
+# Pinned versions for production stability
+
+streamlit==1.34.0
+pandas==2.1.0
+numpy==1.26.0
+plotly==5.20.0
+supabase==2.4.0
+pdfplumber==0.11.0
+python-dateutil==2.8.2
+python-dotenv==1.0.0
+pytz==2023.3
+requests==2.31.0

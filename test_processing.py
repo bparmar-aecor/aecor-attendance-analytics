@@ -211,6 +211,57 @@ def test_custom_shift_5h_required():
 
 
 # =============================================================
+# Extended-break note (BRD v3.2 §8.3)
+# =============================================================
+def test_extended_break_with_full_hours():
+    """Total break 1h 30m + full 8h hours = compliant + note."""
+    punches = [_t(10, 0), _t(13, 0), _t(14, 30), _t(19, 30)]  # 1h30m break, 8h productive
+    res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"], today=date(2026, 4, 16))
+    assert res.is_compliant, "Full 8h completed"
+    assert res.break_within_policy, "Extended break but hours met = OK (v3.2 rule)"
+    assert "Extended break taken" in str(res.notes), "Should have extended-break note"
+
+
+def test_extended_break_without_full_hours():
+    """Total break 1h 30m + incomplete hours = violation."""
+    punches = [_t(10, 0), _t(13, 0), _t(14, 30), _t(18, 30)]  # 1h30m break, 7h productive
+    res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"], today=date(2026, 4, 16))
+    assert not res.is_compliant, "Only 7h < 8h required"
+    assert not res.break_within_policy, "Extended break + incomplete = violation"
+
+
+# =============================================================
+# Weekend handling (BRD v3.2 §6.2)
+# =============================================================
+def test_weekend_work_excluded_from_score():
+    """Employee: 8h Mon-Fri (compliant) + 5h Saturday.
+    Score should use only weekdays; hours should include weekend."""
+    rows = []
+    # Mon-Fri (2026-04-14 to 2026-04-18): 5 compliant days
+    for i in range(5):
+        rows.append({
+            "is_working_day": True, "is_leave": False, "is_present": True,
+            "is_compliant": True, "break_within_policy": True,
+            "productive_hours": 8.0, "is_late": False,
+        })
+    # Saturday (2026-04-19): weekend work
+    rows.append({
+        "is_working_day": False, "is_leave": False, "is_present": True,
+        "is_compliant": True, "break_within_policy": True,
+        "productive_hours": 5.0, "is_late": False,
+    })
+    df = pd.DataFrame(rows)
+    s = compute_productivity_score(df, SHIFTS["normal"])
+    # Attendance: 5 present / 5 working days = 100%
+    # Hours: 5 compliant / 5 present = 100%
+    # Break: 5 compliant / 5 present = 100%
+    # Consistency: 100 (all 8h same)
+    # Total: 100%
+    assert s["total"] == 100.0, "Weekend work should not affect score (only weekday metrics count)"
+    assert s["working_days"] == 5, "Should count 5 working days (weekdays only)"
+
+
+# =============================================================
 # Driver
 # =============================================================
 if __name__ == "__main__":

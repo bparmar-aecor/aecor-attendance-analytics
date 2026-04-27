@@ -211,12 +211,19 @@ def process_day(
 
         # Break-policy violations (BRD §8.2 / §8.3)
         if res.total_break_hours > shift_rule.break_allowed_hours:
-            res.break_within_policy = False
-            excess_min = (res.total_break_hours - shift_rule.break_allowed_hours) * 60
-            res.break_violation_reason = (
-                f"Total break {res.total_break_hours*60:.0f}m "
-                f"exceeds policy by {excess_min:.0f}m"
-            )
+            if res.is_compliant:  # ← If hours are completed
+                # Extended break but hours met = OK (new v3.2 rule)
+                res.break_within_policy = True
+                excess_min = (res.total_break_hours - shift_rule.break_allowed_hours) * 60
+                res.notes.append(
+                    f"Extended break taken ({int(excess_min//60)}h {int(excess_min%60)}m total)"
+                )
+            else:
+                # Break exceeded AND hours short = violation
+                res.break_within_policy = False
+                res.break_violation_reason = (
+                    f"Total break {res.total_break_hours*60:.0f}m exceeds policy"
+                )
         if res.long_breaks_outside_lunch > 0:
             res.break_within_policy = False
             extra = (

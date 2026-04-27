@@ -21,8 +21,8 @@ class ShiftRule:
     end: time
     required_productive_hours: float   # hours
     break_allowed_hours: float         # hours
-    variance_minutes: int = 10         # ± window for compliance
-    grace_minutes:    int = 30         # late only if arrival > start + grace
+    variance_minutes: int = 0          # No tolerance in v3.2 (was: 10)
+    grace_minutes:    int = 0          # No grace period in v3.2 (was: 30)
 
 
 SHIFTS: dict[str, ShiftRule] = {
@@ -33,7 +33,6 @@ SHIFTS: dict[str, ShiftRule] = {
         end=time(19, 0),
         required_productive_hours=8.0,
         break_allowed_hours=1.0,
-        grace_minutes=30,
     ),
     "custom": ShiftRule(
         name="Custom Shift (B)",
@@ -42,7 +41,6 @@ SHIFTS: dict[str, ShiftRule] = {
         end=time(18, 0),
         required_productive_hours=5.0,
         break_allowed_hours=1.0,
-        grace_minutes=30,
     ),
     # Future: add SHIFT_C here when timings are finalised.
 }

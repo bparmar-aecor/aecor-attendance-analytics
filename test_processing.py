@@ -21,15 +21,15 @@ def _t(h, m, s=0):
 
 
 # =============================================================
-# BRD §7.2 examples (adjusted for 30-min grace period)
+# BRD §7.2 examples (grace period removed in v3.2)
 # =============================================================
 def test_brd_example_1_late_incomplete():
-    """Shift A, arrives 10:45 (past grace), 1h break, leaves 18:00 → 6h15m → INCOMPLETE."""
+    """Shift A, arrives 10:45 (late), 1h break, leaves 18:00 → 6h15m → INCOMPLETE."""
     punches = [_t(10, 45), _t(13, 0), _t(14, 0), _t(18, 0)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"],
                       today=date(2026, 4, 16))
     assert res.is_present
-    assert res.is_late, "Should be late — past 30-min grace"
+    assert res.is_late, "Should be late — after 10:00 start (no grace)"
     assert res.minutes_late == 45
     assert abs(res.productive_hours - 6.25) < 0.01
     assert not res.is_compliant
@@ -37,7 +37,7 @@ def test_brd_example_1_late_incomplete():
 
 
 def test_brd_example_2_late_but_compliant():
-    """Shift A, arrives 10:45, 45m break, leaves 19:30 → 8h → NOT incomplete."""
+    """Shift A, arrives 10:45 (late), 45m break, leaves 19:30 → 8h → NOT incomplete."""
     punches = [_t(10, 45), _t(13, 0), _t(13, 45), _t(19, 30)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"],
                       today=date(2026, 4, 16))
@@ -47,29 +47,31 @@ def test_brd_example_2_late_but_compliant():
     assert not res.is_incomplete
 
 
-def test_grace_period_not_late():
-    """Shift A, arrives at 10:29 → within grace, NOT late."""
-    punches = [_t(10, 29), _t(13, 0), _t(14, 0), _t(19, 0)]
+def test_no_grace_10_01_is_late():
+    """Shift A, arrives at 10:01 → IS late (no grace period in v3.2)."""
+    punches = [_t(10, 1), _t(13, 0), _t(14, 0), _t(19, 0)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"],
                       today=date(2026, 4, 16))
-    assert not res.is_late, "10:29 is within 30-min grace"
+    assert res.is_late, "10:01 > 10:00 = late"
+    assert res.minutes_late == 1
 
 
-def test_grace_period_boundary_not_late():
-    """Shift A, arrives exactly at 10:30 (grace boundary) → NOT late."""
-    punches = [_t(10, 30), _t(13, 0), _t(14, 0), _t(19, 0)]
+def test_no_grace_10_00_exactly_not_late():
+    """Shift A, arrives exactly at 10:00 (shift start) → NOT late."""
+    punches = [_t(10, 0), _t(13, 0), _t(14, 0), _t(19, 0)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"],
                       today=date(2026, 4, 16))
-    assert not res.is_late, "10:30 exactly is still within grace"
+    assert not res.is_late, "10:00 exactly is on time"
+    assert res.minutes_late == 0
 
 
-def test_past_grace_is_late():
-    """Shift A, arrives at 10:31 → past grace, IS late."""
-    punches = [_t(10, 31), _t(13, 0), _t(14, 0), _t(19, 30)]
+def test_no_grace_10_30_is_late():
+    """Shift A, arrives at 10:30 → IS late (no grace in v3.2)."""
+    punches = [_t(10, 30), _t(13, 0), _t(14, 0), _t(19, 30)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"],
                       today=date(2026, 4, 16))
-    assert res.is_late
-    assert res.minutes_late == 31
+    assert res.is_late, "10:30 > 10:00 = late"
+    assert res.minutes_late == 30
 
 
 # =============================================================
@@ -122,13 +124,23 @@ def test_single_punch_flagged():
 # =============================================================
 # Variance compliance (BRD §6.1)
 # =============================================================
-def test_within_variance_compliant():
-    """7h 50m should be compliant for 8h required (variance 10m)."""
-    punches = [_t(10, 0), _t(13, 0), _t(14, 0), _t(18, 50)]
+def test_strict_compliance_exactly_8h():
+    """Exactly 8h should be compliant."""
+    punches = [_t(10, 0), _t(13, 0), _t(14, 0), _t(19, 0)]
     res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"], today=date(2026, 4, 16))
-    # Office = 8h50m, break = 1h, productive = 7h50m
-    assert abs(res.productive_hours - 7.833333) < 0.01
-    assert res.is_compliant   # within 10m variance
+    # Office = 9h, break = 1h, productive = 8h
+    assert abs(res.productive_hours - 8.0) < 0.01
+    assert res.is_compliant, "Exactly 8h = compliant"
+
+
+def test_strict_compliance_7h59m_incomplete():
+    """7h 59m should be INCOMPLETE (no variance in v3.2)."""
+    punches = [_t(10, 0), _t(13, 0), _t(14, 0), _t(18, 59)]
+    res = process_day(1, date(2026, 4, 15), punches, SHIFTS["normal"], today=date(2026, 4, 16))
+    # Office = 8h59m, break = 1h, productive = 7h59m
+    assert abs(res.productive_hours - 7.983333) < 0.01
+    assert not res.is_compliant, "7h59m < 8h = not compliant (strict)"
+    assert res.is_incomplete
 
 
 # =============================================================

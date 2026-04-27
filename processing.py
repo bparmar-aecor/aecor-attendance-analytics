@@ -180,13 +180,11 @@ def process_day(
     res.productive_hours = max(0.0, res.total_office_hours - res.total_break_hours)
 
     # Late detection (BRD §7.1) — informational only
-    # With grace: late only if arrival > shift_start + grace_minutes
+    # No grace period in v3.2: late if arrival > shift start
     if shift_rule:
         shift_start_dt = datetime.combine(work_date, shift_rule.start, tzinfo=res.first_in.tzinfo)
-        grace_dt = shift_start_dt + timedelta(minutes=shift_rule.grace_minutes)
-        if res.first_in > grace_dt:
+        if res.first_in > shift_start_dt:
             res.is_late = True
-            # minutes_late measured from actual shift start, not from end of grace
             res.minutes_late = int((res.first_in - shift_start_dt).total_seconds() / 60)
 
     # In-progress days skip compliance & break-policy checks entirely.
@@ -196,16 +194,20 @@ def process_day(
 
     # Compliance (BRD §6 + §7.2)
     if shift_rule:
-        variance_h = shift_rule.variance_minutes / 60.0
-        threshold = shift_rule.required_productive_hours - variance_h
-        res.is_compliant = res.productive_hours >= threshold
-        if res.is_late and not res.is_compliant:
+        res.is_compliant = res.productive_hours >= shift_rule.required_productive_hours
+        if not res.is_compliant:
             res.is_incomplete = True
-            res.notes.append(
-                f"Incomplete: late by {res.minutes_late}m, "
-                f"productive {res.productive_hours:.2f}h "
-                f"< required {shift_rule.required_productive_hours}h"
-            )
+            if res.is_late:
+                res.notes.append(
+                    f"Incomplete: late by {res.minutes_late}m, "
+                    f"productive {res.productive_hours:.2f}h "
+                    f"< required {shift_rule.required_productive_hours}h"
+                )
+            else:
+                res.notes.append(
+                    f"Incomplete: productive {res.productive_hours:.2f}h "
+                    f"< required {shift_rule.required_productive_hours}h"
+                )
 
         # Break-policy violations (BRD §8.2 / §8.3)
         if res.total_break_hours > shift_rule.break_allowed_hours:

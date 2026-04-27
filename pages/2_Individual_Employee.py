@@ -482,3 +482,124 @@ else:
     lc2.markdown("🟠 **Break violation**")
     lc3.markdown("🔴 **Incomplete**")
     lc4.markdown("⚪ **Missed punch**")
+
+
+# ─────────────────────────────────────────────────────────────────
+# ALL-EMPLOYEE SUMMARY TABLE (NEW in Phase 2)
+# ─────────────────────────────────────────────────────────────────
+st.divider()
+st.subheader("📊 All Employees Summary")
+st.caption("Compare all employees for the selected date range. Respects date filters above.")
+
+# Load all employees (Normal + Custom only)
+all_org_emps = load_employees_in_org()
+if all_org_emps.empty:
+    st.warning("No employees in org.")
+else:
+    # Build summary for each employee
+    device_logs = load_device_logs_with_regularizations(start_date, end_date)
+    leaves = load_leaves(start_date, end_date)
+    
+    summary_rows = []
+    
+    for _, emp in all_org_emps.iterrows():
+        emp_id = int(emp["employee_id"])
+        emp_logs = device_logs[device_logs["employee_id"] == emp_id]
+        emp_leaves = leaves[leaves["employee_id"] == emp_id]
+        
+        # Process period
+        daily_df = process_employee_period(
+            device_logs=emp_logs,
+            employees=all_org_emps[[all_org_emps["employee_id"] == emp_id]],
+            leaves=emp_leaves,
+            start=start_date,
+            end=end_date,
+            today=date.today()
+        )
+        
+        if daily_df.empty:
+            continue
+        
+        # Filter to working days and present days
+        working = daily_df[daily_df["is_working_day"] & ~daily_df["is_leave"]]
+        present = daily_df[daily_df["is_present"]]
+        
+        if len(working) == 0:
+            continue
+        
+        present_days = len(present)
+        late_count = int(present["is_late"].sum()) if len(present) > 0 else 0
+        violations = int(present[~present["break_within_policy"]].shape[0]) if len(present) > 0 else 0
+        incomplete = int(present["is_incomplete"].sum()) if len(present) > 0 else 0
+        
+        avg_hours = present["productive_hours"].mean() if len(present) > 0 else 0.0
+        avg_break = present["total_break_hours"].mean() if len(present) > 0 else 0.0
+        
+        # Compute score
+        shift_code = emp["category"].lower()
+        if "normal" in shift_code:
+            sr = SHIFTS["normal"]
+        elif "custom" in shift_code:
+            sr = SHIFTS["custom"]
+        else:
+            sr = None
+        
+        score_data = compute_productivity_score(present, sr) if sr else {}
+        score = score_data.get("total", 0) if score_data else 0
+        
+        summary_rows.append({
+            "Employee Name": emp["name"],
+            "Shift": get_shift_label(emp["category"]),
+            "Present Days": present_days,
+            "Late Arrivals": late_count,
+            "Avg Productive Hours": f"{avg_hours:.2f}h",
+            "Avg Break": f"{avg_break:.0f}m",
+            "Break Violations": violations,
+            "Incomplete Days": incomplete,
+            "Productivity Score": f"{score:.1f}",
+        })
+    
+    if summary_rows:
+        summary_df = pd.DataFrame(summary_rows)
+        
+        # Sorting controls
+        sort_col1, sort_col2 = st.columns([3, 1])
+        with sort_col1:
+            sort_by = st.selectbox(
+                "Sort by",
+                summary_df.columns.tolist(),
+                index=0,
+                key="summary_sort_by"
+            )
+        with sort_col2:
+            ascending = st.checkbox("Ascending", value=False, key="summary_ascending")
+        
+        # Sort and display
+        try:
+            # Handle numeric columns
+            if "Score" in sort_by:
+                summary_df["_sort_key"] = summary_df[sort_by].str.extract(r"([\d.]+)").astype(float)
+                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
+            elif "Hours" in sort_by or "Days" in sort_by or "Violations" in sort_by:
+                summary_df["_sort_key"] = summary_df[sort_by].apply(
+                    lambda x: float(str(x).replace("h", "").replace("m", "")) if isinstance(x, str) else x
+                )
+                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
+            else:
+                summary_df_sorted = summary_df.sort_values(sort_by, ascending=ascending)
+        except Exception:
+            summary_df_sorted = summary_df
+        
+        st.dataframe(summary_df_sorted, use_container_width=True, hide_index=True)
+        
+        # CSV export
+        csv_data = summary_df_sorted.to_csv(index=False)
+        st.download_button(
+            label="📥 Download as CSV",
+            data=csv_data,
+            file_name=f"all_employees_summary_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            key="summary_csv_download"
+        )
+    else:
+        st.info("No summary data available for the selected period.")

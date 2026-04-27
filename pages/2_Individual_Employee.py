@@ -515,7 +515,7 @@ else:
         # Process period
         daily_df = process_employee_period(
             device_logs=emp_logs,
-            employees=all_org_emps[[all_org_emps["employee_id"] == emp_id]],
+            employees=all_org_emps[all_org_emps["employee_id"] == emp_id],
             leaves=emp_leaves,
             start=start_date,
             end=end_date,

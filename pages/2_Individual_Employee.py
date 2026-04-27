@@ -505,7 +505,12 @@ else:
     for _, emp in all_org_emps.iterrows():
         emp_id = int(emp["employee_id"])
         emp_logs = device_logs[device_logs["employee_id"] == emp_id]
-        emp_leaves = leaves[leaves["employee_id"] == emp_id]
+        
+        # Filter leaves if employee_id column exists
+        if not leaves.empty and "employee_id" in leaves.columns:
+            emp_leaves = leaves[leaves["employee_id"] == emp_id]
+        else:
+            emp_leaves = pd.DataFrame()  # empty dataframe if no leaves
         
         # Process period
         daily_df = process_employee_period(

@@ -498,71 +498,67 @@ if all_org_emps.empty:
 else:
     # Build summary for each employee
     device_logs = load_device_logs_with_regularizations(start_date, end_date)
-    leaves = load_leaves(start_date, end_date)
+    all_leaves = load_leaves(start_date, end_date)
+    # Normalize: ensure expected columns exist even if empty
+    if all_leaves.empty or "employee_id" not in all_leaves.columns:
+        all_leaves = pd.DataFrame(columns=["employee_id", "leave_date", "leave_type"])
     
+    # Process ALL employees in a single engine call (efficient — one DB query already done)
+    all_daily = process_employee_period(
+        device_logs=device_logs,
+        employees=all_org_emps,
+        leaves=all_leaves,
+        start=start_date,
+        end=end_date,
+        today=date.today(),
+    )
+
     summary_rows = []
-    
-    for _, emp in all_org_emps.iterrows():
-        emp_id = int(emp["employee_id"])
-        emp_logs = device_logs[device_logs["employee_id"] == emp_id]
-        
-        # Filter leaves if employee_id column exists
-        if not leaves.empty and "employee_id" in leaves.columns:
-            emp_leaves = leaves[leaves["employee_id"] == emp_id]
-        else:
-            emp_leaves = pd.DataFrame()  # empty dataframe if no leaves
-        
-        # Process period
-        daily_df = process_employee_period(
-            device_logs=emp_logs,
-            employees=all_org_emps[all_org_emps["employee_id"] == emp_id],
-            leaves=emp_leaves,
-            start=start_date,
-            end=end_date,
-            today=date.today()
-        )
-        
-        if daily_df.empty:
-            continue
-        
-        # Filter to working days and present days
-        working = daily_df[daily_df["is_working_day"] & ~daily_df["is_leave"]]
-        present = daily_df[daily_df["is_present"]]
-        
-        if len(working) == 0:
-            continue
-        
-        present_days = len(present)
-        late_count = int(present["is_late"].sum()) if len(present) > 0 else 0
-        violations = int(present[~present["break_within_policy"]].shape[0]) if len(present) > 0 else 0
-        incomplete = int(present["is_incomplete"].sum()) if len(present) > 0 else 0
-        
-        avg_hours = present["productive_hours"].mean() if len(present) > 0 else 0.0
-        avg_break = present["total_break_hours"].mean() if len(present) > 0 else 0.0
-        
-        # Compute score
-        shift_code = emp["category"].lower()
-        if "normal" in shift_code:
-            sr = SHIFTS["normal"]
-        elif "custom" in shift_code:
-            sr = SHIFTS["custom"]
-        else:
-            sr = None
-        
-        score_data = compute_productivity_score(present, sr) if sr else {}
-        score = score_data.get("total", 0) if score_data else 0
-        
-        summary_rows.append({
-            "Employee Name": emp["name"],
-            "Shift": get_shift_label(emp["category"]),
-            "Present Days": present_days,
-            "Late Arrivals": late_count,
-            "Avg Productive Hours": f"{avg_hours:.2f}h",
-            "Avg Break": f"{avg_break:.0f}m",
-            "Break Violations": violations,
-            "Incomplete Days": incomplete,
-            "Productivity Score": f"{score:.1f}",
-        })
+
+    if not all_daily.empty:
+        for emp_id, emp_df in all_daily.groupby("employee_id"):
+            emp_row = all_org_emps[all_org_emps["employee_id"] == emp_id]
+            if emp_row.empty:
+                continue
+
+            emp_info = emp_row.iloc[0]
+
+            # Filter out in-progress days for stats (BRD §11.3)
+            finished = emp_df[~emp_df["is_in_progress"]]
+            present = finished[finished["is_present"] & ~finished["is_leave"]]
+
+            if present.empty:
+                continue
+
+            # Only count weekday stats for KPI columns (BRD §6.2)
+            present_weekday = present[present["is_working_day"]]
+
+            present_days = len(present_weekday)
+            late_count = int(present_weekday["is_late"].sum())
+            violations = int((~present_weekday["break_within_policy"]).sum())
+            incomplete = int(present_weekday["is_incomplete"].sum())
+
+            # Avg hours includes ALL present days (weekday + weekend) per BRD §12.5
+            avg_hours = float(present["productive_hours"].mean())
+            avg_break = float(present["total_break_hours"].mean() * 60)
+
+            # Score uses the FULL daily_df (engine filters internally)
+            shift_code = str(emp_info["category"]).lower()
+            sr = SHIFTS.get(shift_code)
+            score_data = compute_productivity_score(emp_df, sr) if sr else {}
+            score_val = score_data.get("total", 0)
+
+            summary_rows.append({
+                "Employee Name": emp_info["name"],
+                "Shift": get_shift_label(emp_info["category"]),
+                "Present Days": present_days,
+                "Late Arrivals": late_count,
+                "Avg Productive Hours": f"{avg_hours:.2f}h",
+                "Avg Break": f"{avg_break:.0f} min",
+                "Break Violations": violations,
+                "Incomplete Days": incomplete,
+                "Productivity Score": f"{score_val:.1f}",
+            })
     
     if summary_rows:
         summary_df = pd.DataFrame(summary_rows)

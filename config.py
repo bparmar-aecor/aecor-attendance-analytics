@@ -4,7 +4,7 @@ config.py
 Single source of truth for all business rules. Change rules
 here; the rest of the system reads from this module.
 
-Per BRD v1.0 (AECOR-ATT-BRD-001).
+Per BRD v3.2 (AECOR-ATT-BRD-003).
 """
 from datetime import time
 from dataclasses import dataclass
@@ -74,7 +74,7 @@ assert abs(sum(SCORE_WEIGHTS.values()) - 1.0) < 1e-9, "Weights must sum to 1.0"
 
 
 # -----------------------------------------------------------
-# Leave types (BRD §10.1)
+# Leave types (BRD §9.1)
 # -----------------------------------------------------------
 LEAVE_TYPES = (
     "Casual Leave",
@@ -87,10 +87,11 @@ LEAVE_TYPES = (
 
 
 # -----------------------------------------------------------
-# Working week (used to compute "working days" for attendance %)
-# Sunday = 6 in Python (Mon=0). Adjust if your org runs differently.
+# Working week (BRD §6.2 — Mon-Fri)
+# Sunday = 6 in Python (Mon=0).
+# Saturdays and Sundays are weekends per BRD v3.2 §6.2.
 # -----------------------------------------------------------
-WORKING_WEEKDAYS = (0, 1, 2, 3, 4, 5)   # Mon-Sat working, Sun off
+WORKING_WEEKDAYS = (0, 1, 2, 3, 4)   # Mon-Fri only
 
 
 # -----------------------------------------------------------

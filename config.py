@@ -4,7 +4,7 @@ config.py
 Single source of truth for all business rules. Change rules
 here; the rest of the system reads from this module.
 
-Per BRD v3.2 (AECOR-ATT-BRD-003).
+Per BRD v3.3 (AECOR-ATT-BRD-003).
 """
 from datetime import time
 from dataclasses import dataclass
@@ -21,8 +21,8 @@ class ShiftRule:
     end: time
     required_productive_hours: float   # hours
     break_allowed_hours: float         # hours
+    late_threshold: time               # Clock-in after this = late (BRD v3.3 §7.1)
     variance_minutes: int = 0          # No tolerance in v3.2 (was: 10)
-    grace_minutes:    int = 0          # No grace period in v3.2 (was: 30)
 
 
 SHIFTS: dict[str, ShiftRule] = {
@@ -33,6 +33,7 @@ SHIFTS: dict[str, ShiftRule] = {
         end=time(19, 0),
         required_productive_hours=8.0,
         break_allowed_hours=1.0,
+        late_threshold=time(11, 0),    # Late only after 11:00 AM
     ),
     "custom": ShiftRule(
         name="Custom Shift (B)",
@@ -41,6 +42,7 @@ SHIFTS: dict[str, ShiftRule] = {
         end=time(18, 0),
         required_productive_hours=5.0,
         break_allowed_hours=1.0,
+        late_threshold=time(12, 30),   # Late only after 12:30 PM
     ),
     # Future: add SHIFT_C here when timings are finalised.
 }
@@ -62,11 +64,11 @@ POST_LUNCH_CUTOFF = time(15, 0)   # >30m break after this  = flagged
 
 
 # -----------------------------------------------------------
-# Productivity scoring weights (BRD §12.1)
+# Productivity scoring weights (BRD v3.3 §11.1)
 # -----------------------------------------------------------
 SCORE_WEIGHTS = {
-    "attendance":        0.20,
-    "hours_completion":  0.40,   # PRIMARY metric
+    "attendance":        0.10,   # Was 0.20 in v3.2
+    "hours_completion":  0.50,   # PRIMARY metric (was 0.40 in v3.2)
     "break_compliance":  0.30,
     "consistency":       0.10,
 }

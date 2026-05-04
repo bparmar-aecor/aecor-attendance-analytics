@@ -179,13 +179,14 @@ def process_day(
     # Productive hours (BRD §8.4)
     res.productive_hours = max(0.0, res.total_office_hours - res.total_break_hours)
 
-    # Late detection (BRD §7.1) — informational only
-    # No grace period in v3.2: late if arrival > shift start
+    # Late detection (BRD v3.3 §7.1) — per-shift late threshold
+    # Late only if clock-in is AFTER the late_threshold (not shift start).
+    # Clock-in at or before threshold = not late. Informational only.
     if shift_rule:
-        shift_start_dt = datetime.combine(work_date, shift_rule.start, tzinfo=res.first_in.tzinfo)
-        if res.first_in > shift_start_dt:
+        threshold_dt = datetime.combine(work_date, shift_rule.late_threshold, tzinfo=res.first_in.tzinfo)
+        if res.first_in > threshold_dt:
             res.is_late = True
-            res.minutes_late = int((res.first_in - shift_start_dt).total_seconds() / 60)
+            res.minutes_late = int((res.first_in - threshold_dt).total_seconds() / 60)
 
     # In-progress days skip compliance & break-policy checks entirely.
     # Partial-day data would produce misleading "incomplete" flags.

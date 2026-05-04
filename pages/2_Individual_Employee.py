@@ -1,16 +1,20 @@
 """
 pages/2_Individual_Employee.py
 -----------------------------------------------------------
-Individual Employee analytics — BRD-compliant, engine-driven.
+Individual Employee analytics — BRD v3.3 compliant.
 
 Data source: device_logs (raw punches + regularizations), NOT attendance_logs.
 Every metric is computed by processing.py — no reliance on eSSL's own numbers.
 
-Per BRD §11.2. Policy choices:
-  • In-progress days (today, or days with no last-out) are shown in the
-    daily log with an "in progress" badge but excluded from stats and score.
-  • Days with a single punch show "Missing clock-out" and are excluded from stats.
-  • Grace period = 30 minutes (configurable in config.py).
+Per BRD v3.3:
+  • Late threshold per shift — Normal: 11:00, Custom: 12:30 (§7.1)
+  • Score weights: Attendance 10%, Hours 50%, Break 30%, Consistency 10% (§11.1)
+  • Quick stats show X / Y (Z%) ratio format (§12.2)
+  • Avg hours formula: total hours (weekday + weekend) / present weekday count (§12.5)
+  • Date picker disabled unless Custom Range selected (§12.4)
+  • Supports nav from Org Overview with employee ID + date range (§12.3)
+  • All-Employee Summary Table moved to Org Overview page (§12.3)
+  • In-progress days (today) shown but excluded from stats and score (§11.3)
   • Late is informational, NEVER penalises the score.
 """
 from __future__ import annotations
@@ -38,6 +42,13 @@ st.set_page_config(page_title="Individual Employee — Aecor",
 st.title("👤 Individual Employee")
 
 # ─────────────────────────────────────────────────────────────────
+# Check for navigation from Org Overview (click-through)
+# ─────────────────────────────────────────────────────────────────
+nav_eid = st.session_state.pop("nav_employee_id", None)
+nav_start = st.session_state.pop("nav_date_start", None)
+nav_end = st.session_state.pop("nav_date_end", None)
+
+# ─────────────────────────────────────────────────────────────────
 # Employee picker — only Normal + Custom (Excluded are hidden per §4.2)
 # ─────────────────────────────────────────────────────────────────
 emps = load_employees_in_org()
@@ -48,7 +59,10 @@ if emps.empty:
     )
     st.stop()
 
-if "indiv_selected_eid" not in st.session_state:
+# If navigated from Org Overview, use that employee; otherwise use session state
+if nav_eid is not None:
+    st.session_state.indiv_selected_eid = int(nav_eid)
+elif "indiv_selected_eid" not in st.session_state:
     st.session_state.indiv_selected_eid = int(emps.iloc[0]["employee_id"])
 
 emp_options = list(zip(emps["employee_id"].tolist(), emps["name"].tolist()))
@@ -66,10 +80,16 @@ except StopIteration:
     default_idx = 0
 
 # ─────────────────────────────────────────────────────────────────
-# Filters row
+# Filters row (BRD v3.3 §12.4 — disabled unless Custom Range)
 # ─────────────────────────────────────────────────────────────────
 today = date.today()
 month_start = today.replace(day=1)
+
+# Determine default preset based on navigation
+if nav_start and nav_end:
+    default_preset_idx = 3  # Custom Range
+else:
+    default_preset_idx = 2  # This month
 
 c1, c2, c3 = st.columns([3, 1, 2])
 
@@ -87,35 +107,51 @@ with c1:
 with c2:
     preset = st.selectbox(
         "Quick range",
-        ["This month", "Last 7 days", "Last 30 days", "Last 90 days", "Custom…"],
-        index=0,
+        ["Today", "This week", "This month", "Custom Range"],
+        index=default_preset_idx,
         key="indiv_preset",
     )
-    if preset == "This month":
-        default_range = (month_start, today)
-    elif preset == "Last 7 days":
-        default_range = (today - timedelta(days=6), today)
-    elif preset == "Last 30 days":
-        default_range = (today - timedelta(days=29), today)
-    elif preset == "Last 90 days":
-        default_range = (today - timedelta(days=89), today)
+
+# Compute date range based on preset
+if preset == "Today":
+    start_date, end_date = today, today
+elif preset == "This week":
+    start_date = today - timedelta(days=today.weekday())
+    end_date = today
+elif preset == "This month":
+    start_date, end_date = month_start, today
+else:
+    # Custom Range — use nav dates if available
+    if nav_start and nav_end:
+        start_date, end_date = nav_start, nav_end
     else:
-        default_range = (month_start, today)
+        start_date, end_date = month_start, today
+
+is_custom = preset == "Custom Range"
 
 with c3:
-    date_range = st.date_input(
-        "Date range",
-        value=default_range,
-        max_value=today,
-        key=f"indiv_range_{preset}",
-    )
+    if is_custom:
+        date_range = st.date_input(
+            "Date range",
+            value=(start_date, end_date),
+            max_value=today,
+            key="indiv_range_custom",
+        )
+        if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
+            start_date, end_date = date_range
+        elif isinstance(date_range, date):
+            start_date = end_date = date_range
+    else:
+        st.date_input(
+            "Date range",
+            value=(start_date, end_date),
+            disabled=True,
+            key="indiv_range_preset",
+        )
 
-if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
-    start_date, end_date = date_range
-elif isinstance(date_range, date):
-    start_date = end_date = date_range
-else:
-    start_date, end_date = default_range
+if start_date > end_date:
+    st.error("Start date must be ≤ end date.")
+    st.stop()
 
 # Employee header
 sel_row = emps.loc[emps["employee_id"] == selected_eid].iloc[0]
@@ -169,33 +205,48 @@ finished = daily[~daily["is_in_progress"] & ~daily["is_leave"]]
 present_finished = finished[finished["is_present"]]
 
 # ─────────────────────────────────────────────────────────────────
-# Quick stats (6 cards)
+# Quick stats (6 cards) — BRD v3.3 §12.2 ratio format
 # ─────────────────────────────────────────────────────────────────
 st.subheader("Quick stats")
 col1, col2, col3, col4, col5, col6 = st.columns(6)
 
-present_days = int(present_finished.shape[0])
-late_days = int(present_finished["is_late"].sum())
-avg_hours = (
-    float(present_finished["productive_hours"].mean())
-    if present_days else 0.0
-)
-avg_break_min = (
-    float(present_finished["total_break_hours"].mean() * 60)
-    if present_days else 0.0
-)
-break_violation_days = int((~present_finished["break_within_policy"]).sum())
-incomplete_days = int(present_finished["is_incomplete"].sum())
+# Calculate denominators
+present_weekday = present_finished[present_finished["is_working_day"]]
+present_weekday_count = len(present_weekday)
 
-col1.metric("Present days", present_days)
-col2.metric("Late arrivals", late_days,
+# Working days = weekdays (non-leave, non-in-progress) in the period
+working_days_count = len(finished[finished["is_working_day"] & ~finished["is_leave"]])
+
+# Present days — X / Y (Z%)
+present_pct = (present_weekday_count / working_days_count * 100) if working_days_count > 0 else 0
+col1.metric("Present days", f"{present_weekday_count} / {working_days_count} ({present_pct:.0f}%)")
+
+# Late arrivals — X / Y (Z%)
+late_days = int(present_weekday["is_late"].sum()) if present_weekday_count > 0 else 0
+late_pct = (late_days / present_weekday_count * 100) if present_weekday_count > 0 else 0
+col2.metric("Late arrivals", f"{late_days} / {present_weekday_count} ({late_pct:.0f}%)",
             help="Informational only — not in score")
+
+# Avg productive hours — BRD §12.5: total hours (weekday + weekend) / present weekday count
+total_prod_hours = float(present_finished["productive_hours"].sum()) if len(present_finished) > 0 else 0.0
+avg_hours = total_prod_hours / present_weekday_count if present_weekday_count > 0 else 0.0
 col3.metric("Avg productive hrs", f"{avg_hours:.1f}h")
+
+# Avg break — weekday breaks only / present weekday count
+avg_break_min = (float(present_weekday["total_break_hours"].sum() * 60) / present_weekday_count) if present_weekday_count > 0 else 0.0
 col4.metric("Avg break", f"{avg_break_min:.0f} min")
-col5.metric("Break violations", break_violation_days,
-            help="Days where total break >1h or long break outside lunch")
-col6.metric("Incomplete days", incomplete_days,
-            help="Late AND did not complete required hours")
+
+# Break violations — X / Y (Z%)
+break_violation_days = int((~present_weekday["break_within_policy"]).sum()) if present_weekday_count > 0 else 0
+bv_pct = (break_violation_days / present_weekday_count * 100) if present_weekday_count > 0 else 0
+col5.metric("Break violations", f"{break_violation_days} / {present_weekday_count} ({bv_pct:.0f}%)",
+            help="Days with long breaks outside lunch window")
+
+# Incomplete days — X / Y (Z%)
+incomplete_days = int(present_weekday["is_incomplete"].sum()) if present_weekday_count > 0 else 0
+inc_pct = (incomplete_days / present_weekday_count * 100) if present_weekday_count > 0 else 0
+col6.metric("Incomplete days", f"{incomplete_days} / {present_weekday_count} ({inc_pct:.0f}%)",
+            help="Days where productive hours fell short of requirement")
 
 st.divider()
 
@@ -231,9 +282,9 @@ with score_col:
 with breakdown_col:
     b1, b2, b3, b4 = st.columns(4)
     b1.metric("Attendance", f"{score.get('attendance', 0):.0f}%",
-              help="Weight: 20% — (Present / Working) × 100")
+              help="Weight: 10% — (Present weekdays / Working days) × 100")
     b2.metric("Hours completion", f"{score.get('hours_completion', 0):.0f}%",
-              help="Weight: 40% — days within ±10min of required")
+              help="Weight: 50% — days meeting full required hours (strict, no tolerance)")
     b3.metric("Break compliance", f"{score.get('break_compliance', 0):.0f}%",
               help="Weight: 30% — days within break policy")
     b4.metric("Consistency", f"{score.get('consistency', 0):.0f}%",
@@ -482,125 +533,3 @@ else:
     lc2.markdown("🟠 **Break violation**")
     lc3.markdown("🔴 **Incomplete**")
     lc4.markdown("⚪ **Missed punch**")
-
-
-# ─────────────────────────────────────────────────────────────────
-# ALL-EMPLOYEE SUMMARY TABLE (NEW in Phase 2)
-# ─────────────────────────────────────────────────────────────────
-st.divider()
-st.subheader("📊 All Employees Summary")
-st.caption("Compare all employees for the selected date range. Respects date filters above.")
-
-# Load all employees (Normal + Custom only)
-all_org_emps = load_employees_in_org()
-if all_org_emps.empty:
-    st.warning("No employees in org.")
-else:
-    # Build summary for each employee
-    device_logs = load_device_logs_with_regularizations(start_date, end_date)
-    all_leaves = load_leaves(start_date, end_date)
-    # Normalize: ensure expected columns exist even if empty
-    if all_leaves.empty or "employee_id" not in all_leaves.columns:
-        all_leaves = pd.DataFrame(columns=["employee_id", "leave_date", "leave_type"])
-    
-    # Process ALL employees in a single engine call (efficient — one DB query already done)
-    all_daily = process_employee_period(
-        device_logs=device_logs,
-        employees=all_org_emps,
-        leaves=all_leaves,
-        start=start_date,
-        end=end_date,
-        today=date.today(),
-    )
-
-    summary_rows = []
-
-    if not all_daily.empty:
-        for emp_id, emp_df in all_daily.groupby("employee_id"):
-            emp_row = all_org_emps[all_org_emps["employee_id"] == emp_id]
-            if emp_row.empty:
-                continue
-
-            emp_info = emp_row.iloc[0]
-
-            # Filter out in-progress days for stats (BRD §11.3)
-            finished = emp_df[~emp_df["is_in_progress"]]
-            present = finished[finished["is_present"] & ~finished["is_leave"]]
-
-            if present.empty:
-                continue
-
-            # Only count weekday stats for KPI columns (BRD §6.2)
-            present_weekday = present[present["is_working_day"]]
-
-            present_days = len(present_weekday)
-            late_count = int(present_weekday["is_late"].sum())
-            violations = int((~present_weekday["break_within_policy"]).sum())
-            incomplete = int(present_weekday["is_incomplete"].sum())
-
-            # Avg hours includes ALL present days (weekday + weekend) per BRD §12.5
-            avg_hours = float(present["productive_hours"].mean())
-            avg_break = float(present["total_break_hours"].mean() * 60)
-
-            # Score uses the FULL daily_df (engine filters internally)
-            shift_code = str(emp_info["category"]).lower()
-            sr = SHIFTS.get(shift_code)
-            score_data = compute_productivity_score(emp_df, sr) if sr else {}
-            score_val = score_data.get("total", 0)
-
-            summary_rows.append({
-                "Employee Name": emp_info["name"],
-                "Shift": get_shift_label(emp_info["category"]),
-                "Present Days": present_days,
-                "Late Arrivals": late_count,
-                "Avg Productive Hours": f"{avg_hours:.2f}h",
-                "Avg Break": f"{avg_break:.0f} min",
-                "Break Violations": violations,
-                "Incomplete Days": incomplete,
-                "Productivity Score": f"{score_val:.1f}",
-            })
-    
-    if summary_rows:
-        summary_df = pd.DataFrame(summary_rows)
-        
-        # Sorting controls
-        sort_col1, sort_col2 = st.columns([3, 1])
-        with sort_col1:
-            sort_by = st.selectbox(
-                "Sort by",
-                summary_df.columns.tolist(),
-                index=0,
-                key="summary_sort_by"
-            )
-        with sort_col2:
-            ascending = st.checkbox("Ascending", value=False, key="summary_ascending")
-        
-        # Sort and display
-        try:
-            # Handle numeric columns
-            if "Score" in sort_by:
-                summary_df["_sort_key"] = summary_df[sort_by].str.extract(r"([\d.]+)").astype(float)
-                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
-            elif "Hours" in sort_by or "Days" in sort_by or "Violations" in sort_by:
-                summary_df["_sort_key"] = summary_df[sort_by].apply(
-                    lambda x: float(str(x).replace("h", "").replace("m", "")) if isinstance(x, str) else x
-                )
-                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
-            else:
-                summary_df_sorted = summary_df.sort_values(sort_by, ascending=ascending)
-        except Exception:
-            summary_df_sorted = summary_df
-        
-        st.dataframe(summary_df_sorted, use_container_width=True, hide_index=True)
-        
-        # CSV export
-        csv_data = summary_df_sorted.to_csv(index=False)
-        st.download_button(
-            label="📥 Download as CSV",
-            data=csv_data,
-            file_name=f"all_employees_summary_{start_date}_{end_date}.csv",
-            mime="text/csv",
-            key="summary_csv_download"
-        )
-    else:
-        st.info("No summary data available for the selected period.")

@@ -1,13 +1,14 @@
 """
 pages/1_Organization_Overview.py
 -----------------------------------------------------------
-Organisation-wide attendance analytics — BRD v3.2 compliant.
+Organisation-wide attendance analytics — BRD v3.3 compliant.
 
 Data source: device_logs (raw punches + regularizations), NOT attendance_logs.
 Every metric is computed by processing.py — no reliance on eSSL's own numbers.
 
-Per BRD v3.2 §12.1. Key rules:
-  • No grace period — any clock-in after shift start = late (§7.1)
+Per BRD v3.3:
+  • Late threshold per shift — Normal: 11:00, Custom: 12:30 (§7.1)
+  • Score weights: Attendance 10%, Hours 50%, Break 30%, Consistency 10% (§11.1)
   • Incomplete = hours short, regardless of arrival time (§7.3)
   • Strict hours — no ±10 min variance (§8.4)
   • Extended-break note — break > cap but hours met = compliant (§8.3)
@@ -15,6 +16,10 @@ Per BRD v3.2 §12.1. Key rules:
   • Weekends — Sat/Sun excluded from score; hours in total/avg displays (§6.2)
   • Today excluded from stats/score (§11.3)
   • Excluded employees omitted from all org metrics (§5)
+  • KPI row 2 shows X / Y (Z%) format (§12.1)
+  • All-Employee Summary Table on this page (§12.3, moved from Individual)
+  • Employee name click-through to Individual page (§12.3)
+  • Date picker: disabled unless Custom Range selected (§12.4)
 """
 from __future__ import annotations
 from datetime import date, timedelta
@@ -51,45 +56,69 @@ st.title("🏢 Organization Overview")
 
 
 # ─────────────────────────────────────────────────────────────────
-# Date filters
+# Date filters (BRD v3.3 §12.4 — disabled unless Custom Range)
 # ─────────────────────────────────────────────────────────────────
 today = date.today()
 month_start = today.replace(day=1)
+
+# Check if navigated from another page with a specific date range
+nav_start = st.session_state.pop("nav_date_start", None)
+nav_end = st.session_state.pop("nav_date_end", None)
+
+if nav_start and nav_end:
+    default_preset_idx = 3  # Custom Range
+else:
+    default_preset_idx = 2  # This month
 
 filter_col1, filter_col2 = st.columns([1, 2])
 
 with filter_col1:
     preset = st.selectbox(
         "Quick range",
-        ["This month", "Last 7 days", "Last 30 days", "Last 90 days", "Custom…"],
-        index=0,
+        ["Today", "This week", "This month", "Custom Range"],
+        index=default_preset_idx,
         key="org_preset",
     )
-    if preset == "This month":
-        default_range = (month_start, today)
-    elif preset == "Last 7 days":
-        default_range = (today - timedelta(days=6), today)
-    elif preset == "Last 30 days":
-        default_range = (today - timedelta(days=29), today)
-    elif preset == "Last 90 days":
-        default_range = (today - timedelta(days=89), today)
+
+if preset == "Today":
+    start_date, end_date = today, today
+elif preset == "This week":
+    start_date = today - timedelta(days=today.weekday())
+    end_date = today
+elif preset == "This month":
+    start_date, end_date = month_start, today
+else:
+    # Custom Range — use nav dates if available, else default
+    if nav_start and nav_end:
+        start_date, end_date = nav_start, nav_end
     else:
-        default_range = (month_start, today)
+        start_date, end_date = month_start, today
+
+is_custom = preset == "Custom Range"
 
 with filter_col2:
-    date_range = st.date_input(
-        "Date range",
-        value=default_range,
-        max_value=today,
-        key=f"org_range_{preset}",
-    )
+    if is_custom:
+        date_range = st.date_input(
+            "Date range",
+            value=(start_date, end_date),
+            max_value=today,
+            key="org_range_custom",
+        )
+        if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
+            start_date, end_date = date_range
+        elif isinstance(date_range, date):
+            start_date = end_date = date_range
+    else:
+        st.date_input(
+            "Date range",
+            value=(start_date, end_date),
+            disabled=True,
+            key="org_range_preset",
+        )
 
-if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
-    start_date, end_date = date_range
-elif isinstance(date_range, date):
-    start_date = end_date = date_range
-else:
-    start_date, end_date = default_range
+if start_date > end_date:
+    st.error("Start date must be ≤ end date.")
+    st.stop()
 
 st.caption(
     f"Period: **{start_date.strftime('%d %b %Y')}** → "
@@ -162,6 +191,9 @@ present_weekday = weekday_finished[
 # All present days including weekends (for avg hours display — BRD §12.5)
 all_present = finished[finished["is_present"] & ~finished["is_leave"]]
 
+# Total present weekdays — denominator for row 2 KPIs
+total_present_weekdays = len(present_weekday)
+
 
 # ─────────────────────────────────────────────────────────────────
 # KPI calculations
@@ -190,7 +222,6 @@ def _avg_productive_hours():
     if all_present.empty:
         return 0.0
     total_hours = float(all_present["productive_hours"].sum())
-    # Denominator = unique (employee, weekday working day) pairs where present
     weekday_present_count = len(present_weekday)
     if weekday_present_count == 0:
         return 0.0
@@ -200,7 +231,6 @@ def _avg_productive_hours():
 avg_prod_hours = _avg_productive_hours()
 
 # --- Break compliance % ---
-# Days within policy / present weekdays
 break_compliance_pct = (
     float(present_weekday["break_within_policy"].sum() / len(present_weekday) * 100)
     if len(present_weekday) > 0 else 0.0
@@ -211,18 +241,18 @@ org_score = org_productivity_score(daily)
 org_score_val = org_score.get("score", 0.0)
 
 # --- Late arrivals count (informational) ---
-total_late = int(present_weekday["is_late"].sum()) if len(present_weekday) > 0 else 0
+total_late = int(present_weekday["is_late"].sum()) if total_present_weekdays > 0 else 0
 
 # --- Long-break violations (hard violations only — BRD §8.3) ---
 total_break_violations = (
     int((~present_weekday["break_within_policy"]).sum())
-    if len(present_weekday) > 0 else 0
+    if total_present_weekdays > 0 else 0
 )
 
 # --- Incomplete hours count (BRD §7.3 — hours short, any arrival time) ---
 total_incomplete = (
     int(present_weekday["is_incomplete"].sum())
-    if len(present_weekday) > 0 else 0
+    if total_present_weekdays > 0 else 0
 )
 
 
@@ -270,24 +300,29 @@ r1c4.metric(
 
 
 # ─────────────────────────────────────────────────────────────────
-# KPI Cards — Row 2 (3 cards)
+# KPI Cards — Row 2 (3 cards) — X / Y (Z%) format per v3.3
 # ─────────────────────────────────────────────────────────────────
 r2c1, r2c2, r2c3 = st.columns(3)
 
+late_pct = (total_late / total_present_weekdays * 100) if total_present_weekdays > 0 else 0
 r2c1.metric(
     "Late arrivals",
-    total_late,
-    help="Total late-arrival instances across all employees (informational — not in score)",
+    f"{total_late} / {total_present_weekdays} ({late_pct:.1f}%)",
+    help="Late-arrival instances / total present weekdays. Informational — not in score.",
 )
+
+violations_pct = (total_break_violations / total_present_weekdays * 100) if total_present_weekdays > 0 else 0
 r2c2.metric(
     "Break violations",
-    total_break_violations,
-    help="Days with long breaks outside lunch window (>30 min before 12:00 or after 15:00)",
+    f"{total_break_violations} / {total_present_weekdays} ({violations_pct:.1f}%)",
+    help="Hard break violation days / total present weekdays.",
 )
+
+incomplete_pct = (total_incomplete / total_present_weekdays * 100) if total_present_weekdays > 0 else 0
 r2c3.metric(
     "Incomplete hours",
-    total_incomplete,
-    help="Days where productive hours fell short of requirement (strict — no tolerance)",
+    f"{total_incomplete} / {total_present_weekdays} ({incomplete_pct:.1f}%)",
+    help="Days with hours short of requirement / total present weekdays.",
 )
 
 st.divider()
@@ -517,6 +552,135 @@ st.divider()
 
 
 # ─────────────────────────────────────────────────────────────────
+# ALL-EMPLOYEE SUMMARY TABLE (BRD v3.3 §12.3 — moved from Individual page)
+# ─────────────────────────────────────────────────────────────────
+st.subheader("📊 All Employees Summary")
+st.caption("Compare all employees for the selected period. Click an employee name to see their detailed page.")
+
+if not daily.empty:
+    summary_rows = []
+    emp_id_map = {}  # For click-through navigation
+
+    for emp_id, emp_df in daily.groupby("employee_id"):
+        emp_row = org_emps[org_emps["employee_id"] == emp_id]
+        if emp_row.empty:
+            continue
+
+        emp_info = emp_row.iloc[0]
+
+        # Filter out in-progress days for stats (BRD §11.3)
+        emp_finished = emp_df[~emp_df["is_in_progress"]]
+        emp_present = emp_finished[emp_finished["is_present"] & ~emp_finished["is_leave"]]
+
+        if emp_present.empty:
+            continue
+
+        # Weekday stats for KPI columns (BRD §6.2)
+        emp_present_weekday = emp_present[emp_present["is_working_day"]]
+        present_weekday_count = len(emp_present_weekday)
+
+        if present_weekday_count == 0:
+            continue
+
+        late_count = int(emp_present_weekday["is_late"].sum())
+        violations_count = int((~emp_present_weekday["break_within_policy"]).sum())
+        incomplete_count = int(emp_present_weekday["is_incomplete"].sum())
+
+        # Avg hours: BRD §12.5 — total hours (weekday + weekend) ÷ present weekday count
+        total_hours = float(emp_present["productive_hours"].sum())
+        avg_hours = total_hours / present_weekday_count
+
+        # Avg break: sum of weekday break hours ÷ present weekday count
+        avg_break = float(emp_present_weekday["total_break_hours"].sum() * 60) / present_weekday_count
+
+        # Score
+        shift_code = str(emp_info["category"]).lower()
+        sr = SHIFTS.get(shift_code)
+        score_data = compute_productivity_score(emp_df, sr) if sr else {}
+        score_val = score_data.get("total", 0)
+
+        emp_name = emp_info["name"]
+        emp_id_map[emp_name] = int(emp_id)
+
+        summary_rows.append({
+            "Employee Name": emp_name,
+            "Shift": get_shift_label(emp_info["category"]),
+            "Present Days": present_weekday_count,
+            "Late Arrivals": late_count,
+            "Avg Productive Hours": f"{avg_hours:.2f}h",
+            "Avg Break": f"{avg_break:.0f} min",
+            "Break Violations": violations_count,
+            "Incomplete Days": incomplete_count,
+            "Productivity Score": f"{score_val:.1f}",
+        })
+
+    if summary_rows:
+        summary_df = pd.DataFrame(summary_rows)
+
+        # Sorting controls
+        sort_col1, sort_col2 = st.columns([3, 1])
+        with sort_col1:
+            sort_by = st.selectbox(
+                "Sort by",
+                summary_df.columns.tolist(),
+                index=0,
+                key="org_summary_sort_by"
+            )
+        with sort_col2:
+            ascending = st.checkbox("Ascending", value=False, key="org_summary_ascending")
+
+        # Sort
+        try:
+            if "Score" in sort_by:
+                summary_df["_sort_key"] = summary_df[sort_by].str.extract(r"([\d.]+)").astype(float)
+                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
+            elif "Hours" in sort_by or "Break" in sort_by:
+                summary_df["_sort_key"] = summary_df[sort_by].apply(
+                    lambda x: float(str(x).replace("h", "").replace(" min", "")) if isinstance(x, str) else x
+                )
+                summary_df_sorted = summary_df.sort_values("_sort_key", ascending=ascending).drop("_sort_key", axis=1)
+            elif sort_by in ("Present Days", "Late Arrivals", "Break Violations", "Incomplete Days"):
+                summary_df_sorted = summary_df.sort_values(sort_by, ascending=ascending)
+            else:
+                summary_df_sorted = summary_df.sort_values(sort_by, ascending=ascending)
+        except Exception:
+            summary_df_sorted = summary_df
+
+        st.dataframe(summary_df_sorted, use_container_width=True, hide_index=True)
+
+        # Employee click-through — show buttons for each employee
+        st.caption("Click an employee to view their detailed page:")
+        emp_names_sorted = summary_df_sorted["Employee Name"].tolist()
+        cols_per_row = 6
+        for i in range(0, len(emp_names_sorted), cols_per_row):
+            chunk = emp_names_sorted[i:i + cols_per_row]
+            cols = st.columns(cols_per_row)
+            for j, emp_name in enumerate(chunk):
+                eid = emp_id_map.get(emp_name)
+                if eid and cols[j].button(emp_name, key=f"sum_nav_{eid}", use_container_width=True):
+                    st.session_state["nav_employee_id"] = eid
+                    st.session_state["nav_date_start"] = start_date
+                    st.session_state["nav_date_end"] = end_date
+                    st.switch_page("pages/2_Individual_Employee.py")
+
+        # CSV export
+        csv_data = summary_df_sorted.to_csv(index=False)
+        st.download_button(
+            label="📥 Download as CSV",
+            data=csv_data,
+            file_name=f"all_employees_summary_{start_date}_{end_date}.csv",
+            mime="text/csv",
+            key="org_summary_csv_download"
+        )
+    else:
+        st.info("No summary data available for the selected period.")
+else:
+    st.info("No data to summarize.")
+
+st.divider()
+
+
+# ─────────────────────────────────────────────────────────────────
 # Frequent late arrivals — top 10
 # ─────────────────────────────────────────────────────────────────
 st.subheader("Frequent late arrivals")
@@ -545,6 +709,22 @@ if len(present_weekday) > 0:
         display_late_table.columns = ["Employee", "Shift", "Late days", "Avg minutes late"]
 
         st.dataframe(display_late_table, use_container_width=True, hide_index=True)
+
+        # Click-through navigation for late arrivals
+        st.caption("Click to view employee details:")
+        late_names = display_late["employee_name"].tolist()
+        late_ids = display_late["employee_id"].tolist()
+        cols_per_row = 6
+        for i in range(0, len(late_names), cols_per_row):
+            chunk_names = late_names[i:i + cols_per_row]
+            chunk_ids = late_ids[i:i + cols_per_row]
+            cols = st.columns(cols_per_row)
+            for j, (name, eid) in enumerate(zip(chunk_names, chunk_ids)):
+                if cols[j].button(name, key=f"late_nav_{eid}", use_container_width=True):
+                    st.session_state["nav_employee_id"] = int(eid)
+                    st.session_state["nav_date_start"] = start_date
+                    st.session_state["nav_date_end"] = end_date
+                    st.switch_page("pages/2_Individual_Employee.py")
 
         if len(late_summary) > 10:
             with st.expander(f"Show all {len(late_summary)} employees"):
@@ -594,6 +774,22 @@ if len(present_weekday) > 0:
         ]
 
         st.dataframe(display_table, use_container_width=True, hide_index=True)
+
+        # Click-through navigation for incomplete
+        st.caption("Click to view employee details:")
+        inc_names = display_incomplete["employee_name"].tolist()
+        inc_ids = display_incomplete["employee_id"].tolist()
+        cols_per_row = 6
+        for i in range(0, len(inc_names), cols_per_row):
+            chunk_names = inc_names[i:i + cols_per_row]
+            chunk_ids = inc_ids[i:i + cols_per_row]
+            cols = st.columns(cols_per_row)
+            for j, (name, eid) in enumerate(zip(chunk_names, chunk_ids)):
+                if cols[j].button(name, key=f"inc_nav_{eid}", use_container_width=True):
+                    st.session_state["nav_employee_id"] = int(eid)
+                    st.session_state["nav_date_start"] = start_date
+                    st.session_state["nav_date_end"] = end_date
+                    st.switch_page("pages/2_Individual_Employee.py")
 
         if len(incomplete_summary) > 10:
             with st.expander(f"Show all {len(incomplete_summary)} employees"):

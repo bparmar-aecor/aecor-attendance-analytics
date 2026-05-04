@@ -1,10 +1,12 @@
 """
 app.py — Aecor Attendance Analytics Dashboard
 ------------------------------------------------------------
+Landing page / navigation hub only (BRD v3.3 §12.6).
+No date range picker — each sub-page manages its own dates.
+
 Run:  streamlit run app.py
 Pages live in /pages and are auto-discovered by Streamlit.
 """
-from datetime import date, timedelta
 import streamlit as st
 
 from config import APP_TITLE, ORG_NAME, SHIFTS
@@ -18,7 +20,7 @@ st.set_page_config(
 )
 
 # --------------------------------------------------------------
-# Sidebar — global filters & connection status
+# Sidebar — connection status only (no date filters per v3.3)
 # --------------------------------------------------------------
 with st.sidebar:
     st.title("📊 Aecor Attendance")
@@ -29,36 +31,6 @@ with st.sidebar:
         st.success(f"🟢 Supabase: {msg}")
     else:
         st.error(f"🔴 Supabase: {msg}")
-    st.divider()
-
-    st.markdown("### Date range")
-    preset = st.radio(
-        "Quick select",
-        ["Today", "This week", "This month", "Last 30 days", "Custom"],
-        index=2,
-        label_visibility="collapsed",
-    )
-    today = date.today()
-    if preset == "Today":
-        start, end = today, today
-    elif preset == "This week":
-        start, end = today - timedelta(days=today.weekday()), today
-    elif preset == "This month":
-        start, end = today.replace(day=1), today
-    elif preset == "Last 30 days":
-        start, end = today - timedelta(days=30), today
-    else:
-        c1, c2 = st.columns(2)
-        start = c1.date_input("From", today.replace(day=1))
-        end   = c2.date_input("To", today)
-
-    if start > end:
-        st.error("Start date must be ≤ end date")
-        st.stop()
-
-    st.session_state["date_start"] = start
-    st.session_state["date_end"]   = end
-    st.caption(f"📅 {start.isoformat()} → {end.isoformat()}")
 
     st.divider()
     with st.expander("ℹ️ Active shifts"):
@@ -67,7 +39,8 @@ with st.sidebar:
                 f"**{s.name}**  \n"
                 f"`{s.start.strftime('%H:%M')}–{s.end.strftime('%H:%M')}` · "
                 f"{s.required_productive_hours}h productive + "
-                f"{s.break_allowed_hours}h break"
+                f"{s.break_allowed_hours}h break  \n"
+                f"Late threshold: `{s.late_threshold.strftime('%H:%M')}`"
             )
 
 # --------------------------------------------------------------
@@ -89,7 +62,7 @@ c6.page_link("pages/6_Settings.py",      label="⚙️ Settings", icon=None)
 st.divider()
 st.markdown("""
 ### How this dashboard works
-- **Organization Overview** → company-wide KPIs, productivity score, trends
+- **Organization Overview** → company-wide KPIs, productivity score, trends, all-employee summary
 - **Individual Employee** → per-employee daily log, break timeline, score breakdown
 - **Leave Management** → mark / un-mark leaves
 - **Punch Regularization** → fix missing or wrong punches (audit-logged)
